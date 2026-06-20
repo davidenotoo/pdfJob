@@ -1,0 +1,16 @@
+{
+    "name": "webtuned/laser-pdf-mapper",
+    "description": "Editor IDE per la mappatura dinamica di campi su template PDF e generazione automatica di Sheet Report / Parts List per macchinari di taglio laser (Amada ENSIS3015AJ e simili).",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.0",
+        "ext-pdo": "*",
+        "ext-mbstring": "*",
+        "ext-curl": "*",
+        "setasign/fpdi-tcpdf": "^2.3"
+    },
+    "config": {
+        "optimize-autoloader": true
+    }
+}

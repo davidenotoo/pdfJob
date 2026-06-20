@@ -1,0 +1,6 @@
+# Impedisce l'esecuzione di script PHP dentro questa cartella, anche se
+# qualcuno riuscisse a caricare un file con estensione diversa da .pdf
+# (difesa aggiuntiva: upload.php valida gia' MIME type ed estensione).
+<FilesMatch "\.(php|phtml|php\d|phar)$">
+    Require all denied
+</FilesMatch>
