@@ -119,7 +119,7 @@ class PDFGenerator
 
             $fontStyle = ($field['font_weight'] === 'bold') ? 'B' : '';
             $fontFamily = $field['font_family'] ?: 'helvetica';
-            $fontSize = (float) ($field['font_size'] ?: 9);
+            $fontSize = ((float) ($field['font_size'] ?: 9)) * 0.75;
             $align = in_array($field['text_align'], ['L', 'C', 'R', 'J'], true) ? $field['text_align'] : 'L';
 
             $this->pdf->SetFont($fontFamily, $fontStyle, $fontSize);
@@ -141,7 +141,7 @@ class PDFGenerator
                 true,       // reseth
                 0,          // stretch
                 false,      // ishtml
-                true,       // autopadding
+                false,       // autopadding
                 0,          // maxh (0 = nessun limite, si espande)
                 'T',
                 false       // fitcell
