@@ -29,588 +29,539 @@
     // ===================== Riferimenti DOM =====================
     const dropzone = document.getElementById('dropzone');
     const fileInput = document.getElementById('file-input');
-    const canvasStage = document.getElementById('canvas-stage');
-    const canvasInner = document.getElementById('canvas-inner');
+    const overlay = document.getElementById('overlay') || document.querySelector('.overlay');
     const pdfCanvas = document.getElementById('pdf-canvas');
-    const overlay = document.getElementById('field-overlay');
-    const canvasScroll = document.getElementById('canvas-scroll');
-
-    const templateNameInput = document.getElementById('template-name-input');
-    const btnSaveTemplate = document.getElementById('btn-save-template');
+    const btnSaveTemplate = document.getElementById('save-template-btn') || document.getElementById('btn-save-template');
     const saveStatusEl = document.getElementById('save-status');
 
-    const propertiesPanel = document.getElementById('properties-panel');
-    const emptyPropertiesHint = document.getElementById('empty-properties-hint');
-    const generatePanel = document.getElementById('generate-panel');
+    // Mappatura selettori pannello proprietà con fallback flessibili basati sulle classi CSS
+    const propFields = {
+        name: document.getElementById('prop-name') || document.getElementById('field-name') || document.querySelector('[data-prop="name"]'),
+        text: document.getElementById('prop-text') || document.getElementById('property-input-text') || document.getElementById('field-text') || document.querySelector('[data-prop="text"]'),
+        fontSize: document.getElementById('prop-font-size') || document.getElementById('field-font-size') || document.querySelector('[data-prop="font-size"]'),
+        align: document.getElementById('prop-align') || document.getElementById('field-align') || document.querySelector('[data-prop="align"]')
+    };
 
-    const propDbBlock = document.getElementById('prop-db-block');
-    const propDbVariable = document.getElementById('prop-db-variable');
-    const propStaticBlock = document.getElementById('prop-static-block');
-    const propStaticText = document.getElementById('prop-static-text');
-    const propX = document.getElementById('prop-x');
-    const propY = document.getElementById('prop-y');
-    const propW = document.getElementById('prop-w');
-    const propH = document.getElementById('prop-h');
-    const propFontSize = document.getElementById('prop-font-size');
-    const propFontFamily = document.getElementById('prop-font-family');
-    const propAlign = document.getElementById('prop-align');
-    const propBold = document.getElementById('prop-bold');
-    const propGroup = document.getElementById('prop-group');
-    const btnDeleteField = document.getElementById('btn-delete-field');
-
-    const statusText = document.getElementById('status-text');
-    const toastContainer = document.getElementById('toast-container');
-
-    // ===================== Toast =====================
-    function showToast(message, type) {
-        const el = document.createElement('div');
-        el.className = 'toast' + (type === 'error' ? ' toast-error' : '');
-        el.textContent = message;
-        toastContainer.appendChild(el);
-        setTimeout(() => el.remove(), 4200);
+    // =========================================================================
+    // TOAST & STATUS BAR
+    // =========================================================================
+    function showToast(message, type = 'success') {
+        const container = document.getElementById('toast-container') || document.body;
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => toast.remove(), 4000);
     }
 
-    // ===================== Status bar =====================
     function updateStatusBar() {
-        if (!state.pageWidthMm) {
-            statusText.textContent = 'Nessun template caricato';
-            return;
-        }
-        const count = overlay.querySelectorAll('.field-box').length;
-        const scaleXmm = state.canvasWidthPx ? (state.pageWidthMm / state.canvasWidthPx) : 0;
-        statusText.innerHTML =
-            `Pagina <span class="hl">${state.pageWidthMm.toFixed(1)} × ${state.pageHeightMm.toFixed(1)} mm</span>` +
-            `<span class="sep">|</span>Canvas <span class="hl">${Math.round(state.canvasWidthPx)} × ${Math.round(state.canvasHeightPx)} px</span>` +
-            `<span class="sep">|</span>Scala <span class="hl">1px ≈ ${scaleXmm.toFixed(3)}mm</span>` +
-            `<span class="sep">|</span>Campi <span class="hl">${count}</span>`;
-    }
-
-    // =========================================================================
-    // RENDERING PDF (PDF.js)
-    // =========================================================================
-
-    async function renderPdf(url, lockedWidthPx) {
-        const loadingTask = pdfjsLib.getDocument(url);
-        const pdf = await loadingTask.promise;
-        const page = await pdf.getPage(1);
-
-        const nativeViewport = page.getViewport({ scale: 1 });
-
-        let cssWidth;
-        if (lockedWidthPx) {
-            cssWidth = lockedWidthPx;
+        const statusText = document.getElementById('status-text');
+        if (!statusText) return;
+        if (state.pageWidthMm && state.pageHeightMm) {
+            statusText.innerHTML = `Template ID: <span class="hl">${state.templateId || 'Nuovo'}</span> | Dimensioni PDF: <span class="hl">${state.pageWidthMm}x${state.pageHeightMm} mm</span>`;
         } else {
-            const available = Math.max(360, canvasScroll.clientWidth - 64);
-            cssWidth = Math.min(available, 1000);
+            statusText.textContent = 'Nessun template caricato. Carica un PDF per iniziare.';
         }
-        const scale = cssWidth / nativeViewport.width;
-        const viewport = page.getViewport({ scale });
-
-        const dpr = window.devicePixelRatio || 1;
-
-        pdfCanvas.width = Math.floor(viewport.width * dpr);
-        pdfCanvas.height = Math.floor(viewport.height * dpr);
-        pdfCanvas.style.width = viewport.width + 'px';
-        pdfCanvas.style.height = viewport.height + 'px';
-
-        canvasInner.style.width = viewport.width + 'px';
-        canvasInner.style.height = viewport.height + 'px';
-        overlay.style.width = viewport.width + 'px';
-        overlay.style.height = viewport.height + 'px';
-
-        const ctx = pdfCanvas.getContext('2d');
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        await page.render({ canvasContext: ctx, viewport }).promise;
-
-        state.canvasWidthPx = viewport.width;
-        state.canvasHeightPx = viewport.height;
-
-        dropzone.classList.add('hidden');
-        canvasStage.classList.remove('hidden');
-        updateStatusBar();
     }
 
     // =========================================================================
-    // UPLOAD (nuovo template)
+    // PDF RENDERING
     // =========================================================================
+    async function renderPdf(pdfUrl, forcedWidthPx = null) {
+        try {
+            const loadingTask = pdfjsLib.getDocument(pdfUrl);
+            const pdf = await loadingTask.promise;
+            const page = await pdf.getPage(1);
 
+            const baseWidth = forcedWidthPx || 800;
+            const unscaledViewport = page.getViewport({ scale: 1 });
+            const scale = baseWidth / unscaledViewport.width;
+            const viewport = page.getViewport({ scale: scale });
+
+            pdfCanvas.width = viewport.width;
+            pdfCanvas.height = viewport.height;
+            state.canvasWidthPx = viewport.width;
+            state.canvasHeightPx = viewport.height;
+
+            if (overlay) {
+                overlay.style.width = `${viewport.width}px`;
+                overlay.style.height = `${viewport.height}px`;
+            }
+
+            const renderContext = {
+                canvasContext: pdfCanvas.getContext('2d'),
+                viewport: viewport
+            };
+            await page.render(renderContext).promise;
+        } catch (err) {
+            console.error('Errore nel rendering del PDF:', err);
+            throw err;
+        }
+    }
+
+    // =========================================================================
+    // DROPZONE & UPLOAD
+    // =========================================================================
     function setupDropzone() {
+        if (!dropzone || !fileInput) return;
+
         dropzone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
 
-        ['dragenter', 'dragover'].forEach(evt =>
-            dropzone.addEventListener(evt, (e) => {
-                e.preventDefault();
-                dropzone.classList.add('drag-over');
-            })
-        );
-        ['dragleave', 'drop'].forEach(evt =>
-            dropzone.addEventListener(evt, (e) => {
-                e.preventDefault();
-                dropzone.classList.remove('drag-over');
-            })
-        );
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('dragover');
+        });
+
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+
         dropzone.addEventListener('drop', (e) => {
-            const file = e.dataTransfer.files && e.dataTransfer.files[0];
-            if (file) handleFileSelected(file);
-        });
-        fileInput.addEventListener('change', () => {
-            if (fileInput.files[0]) handleFileSelected(fileInput.files[0]);
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
         });
     }
 
-    function handleFileSelected(file) {
-        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-            showToast('Seleziona un file PDF.', 'error');
+   async function handleFiles(files) {
+        if (!files || files.length === 0) return;
+        const file = files[0];
+        if (file.type !== 'application/pdf') {
+            showToast('Il file deve essere un PDF.', 'error');
             return;
         }
-        if (file.size > 20 * 1024 * 1024) {
-            showToast('Il PDF supera i 20 MB consentiti.', 'error');
-            return;
-        }
-        uploadFile(file);
-    }
 
-    async function uploadFile(file) {
-        dropzone.classList.add('drag-over');
         const formData = new FormData();
         formData.append('pdf_file', file);
 
         try {
-            const res = await fetch('upload.php', { method: 'POST', body: formData });
-            const data = await res.json();
-            dropzone.classList.remove('drag-over');
+            const response = await fetch('upload.php', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
 
-            if (!data.success) {
-                showToast(data.error || 'Errore durante il caricamento.', 'error');
-                return;
+            if (data.success) {
+                state.templateId = data.template_id || null;
+                state.pageWidthMm = data.page_width_mm;
+                state.pageHeightMm = data.page_height_mm;
+                
+                await renderPdf(data.url);
+                if (overlay) overlay.querySelectorAll('.field-box').forEach(el => el.remove());
+                
+                // --- QUESTE TRE RIGHE SONO QUELLE CHE MANCAVANO ---
+                const canvasStage = document.getElementById('canvas-stage');
+                if (dropzone) dropzone.classList.add('hidden');
+                if (canvasStage) canvasStage.classList.remove('hidden');
+                // --------------------------------------------------
+
+                updateStatusBar();
+                showToast('PDF caricato con successo.');
+            } else {
+                showToast(data.error || 'Errore durante l\'upload del PDF.', 'error');
             }
-            if (data.pages_warning) {
-                showToast(data.pages_warning, 'error');
-            }
-
-            state.pendingUpload = data;
-            state.pageWidthMm = data.page_width_mm;
-            state.pageHeightMm = data.page_height_mm;
-            state.templateId = null;
-
-            overlay.innerHTML = '';
-
-            await renderPdf(data.url, null);
-
-            if (!templateNameInput.value.trim()) {
-                templateNameInput.value = file.name.replace(/\.pdf$/i, '');
-            }
-
-            showToast('PDF caricato. Trascina i campi dalla libreria a sinistra.');
         } catch (err) {
-            dropzone.classList.remove('drag-over');
-            showToast('Errore di rete durante il caricamento del PDF.', 'error');
+            console.error(err);
+            showToast('Errore di rete durante l\'upload.', 'error');
         }
     }
 
     // =========================================================================
-    // CREAZIONE / INTERAZIONE CELLE
+    // INTERAZIONE CELLE (SPOSTAMENTO, RIDIMENSIONAMENTO E SELEZIONE)
     // =========================================================================
+    function createFieldBox(config) {
+        state.fieldIdCounter++;
+        const id = config.id || `field_${Date.now()}_${state.fieldIdCounter}`;
 
-    const DEFAULT_W = 130;
-    const DEFAULT_H = 22;
-
-    function createFieldBox(opts) {
         const el = document.createElement('div');
         el.className = 'field-box';
-        el.dataset.fieldId = opts.fieldId || ('new_' + (++state.fieldIdCounter));
-        el.dataset.type = opts.type;
-        el.dataset.dbVariable = opts.type === 'db' ? opts.dbVariable : '';
-        el.dataset.staticText = opts.type === 'static' ? (opts.staticText || 'Testo') : '';
-        el.dataset.fontSize = opts.fontSize || 9;
-        el.dataset.fontFamily = opts.fontFamily || 'helvetica';
-        el.dataset.fontWeight = opts.fontWeight || 'normal';
-        el.dataset.textAlign = opts.textAlign || 'L';
-        el.dataset.groupName = opts.groupName || '';
-
-        const w = opts.width || DEFAULT_W;
-        const h = opts.height || DEFAULT_H;
-        let x = opts.x !== undefined ? opts.x : 20;
-        let y = opts.y !== undefined ? opts.y : 20;
-
-        x = Math.max(0, Math.min(x, state.canvasWidthPx - w));
-        y = Math.max(0, Math.min(y, state.canvasHeightPx - h));
-
-        el.style.left = x + 'px';
-        el.style.top = y + 'px';
-        el.style.width = w + 'px';
-        el.style.height = h + 'px';
-
-        const label = document.createElement('span');
-        label.className = 'field-box-label';
-        label.textContent = opts.type === 'db' ? opts.dbVariable : (opts.staticText || 'Testo');
-        el.appendChild(label);
-
-        const resizer = document.createElement('span');
-        resizer.className = 'field-box-resize';
-        el.appendChild(resizer);
-
-        overlay.appendChild(el);
-        makeInteractive(el);
+        el.id = id;
         
-        // Applica gli stili visivi appena creata!
-        applyVisualStyles(el);
+        // Configurazione iniziale dei nodi descrittivi nel Dataset
+        el.dataset.id = id;
+        el.dataset.fieldName = config.fieldName || `campo_${state.fieldIdCounter}`;
+        el.dataset.staticText = config.staticText || '';
+        el.dataset.fontSize = config.fontSize || '10';
+        el.dataset.align = config.align || 'L';
 
-        el.addEventListener('click', (e) => {
-            e.stopPropagation();
-            selectField(el);
-        });
+        // Geometria inline espressa rigorosamente in pixel per il mappaggio dell'overlay
+        el.style.position = 'absolute';
+        el.style.left = `${config.left || 40}px`;
+        el.style.top = `${config.top || 40}px`;
+        el.style.width = `${config.width || 120}px`;
+        el.style.height = `${config.height || 30}px`;
 
-        updateStatusBar();
+        el.innerHTML = `
+            <div class="field-label"></div>
+            <div class="resize-handle"></div>
+        `;
+
+        updateFieldBoxLabel(el);
+        setupFieldEvents(el);
+
+        if (overlay) overlay.appendChild(el);
         return el;
     }
 
-    function makeInteractive(el) {
-        interact(el)
-            .draggable({
-                listeners: { move: dragMoveListener },
-                modifiers: [
-                    interact.modifiers.restrictRect({ restriction: overlay, endOnly: false }),
-                ],
-                inertia: false,
-            })
-            .resizable({
-                // COLLEGATO AL QUADRATINO BLU IN BASSO A DESTRA!
-                edges: { left: false, top: false, right: '.field-box-resize', bottom: '.field-box-resize' },
-                listeners: { move: resizeMoveListener },
-                modifiers: [
-                    interact.modifiers.restrictSize({ min: { width: 14, height: 10 } }),
-                    interact.modifiers.restrictEdges({ outer: overlay }),
-                ],
-                inertia: false,
-            });
-    }
-
-    function dragMoveListener(event) {
-        const target = event.target;
-        const x = (parseFloat(target.style.left) || 0) + event.dx;
-        const y = (parseFloat(target.style.top) || 0) + event.dy;
-        target.style.left = x + 'px';
-        target.style.top = y + 'px';
-        if (target === state.selectedEl) syncPropertiesFromElement(target);
-    }
-
-    function resizeMoveListener(event) {
-        const target = event.target;
-        target.style.width = event.rect.width + 'px';
-        target.style.height = event.rect.height + 'px';
-        if (target === state.selectedEl) syncPropertiesFromElement(target);
-    }
-
-    function hydrateExistingFields() {
-        overlay.querySelectorAll('.field-box').forEach((el) => {
-            makeInteractive(el);
-            applyVisualStyles(el); // Applica la grafica anche ai campi caricati
-            el.addEventListener('click', (e) => {
+    function setupFieldEvents(el) {
+        el.addEventListener('mousedown', (e) => {
+            // Se l'evento intercetta l'ancora di ridimensionamento, isola il flusso dal drag nativo
+            if (e.target.classList.contains('resize-handle')) {
+                e.preventDefault();
                 e.stopPropagation();
-                selectField(el);
-            });
-        });
-    }
-
-    // ===================== Drag dalla Libreria Campi =====================
-    function setupFieldLibrary() {
-        document.querySelectorAll('.field-lib-item').forEach((li) => {
-            li.addEventListener('dragstart', (e) => {
-                li.classList.add('dragging');
-                e.dataTransfer.effectAllowed = 'copy';
-                e.dataTransfer.setData('text/plain', JSON.stringify({
-                    type: li.dataset.type,
-                    dbVariable: li.dataset.dbVariable || null,
-                }));
-            });
-            li.addEventListener('dragend', () => li.classList.remove('dragging'));
-        });
-
-        overlay.addEventListener('dragover', (e) => {
-            if (!state.canvasWidthPx) return;
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'copy';
-        });
-
-        overlay.addEventListener('drop', (e) => {
-            e.preventDefault();
-            if (!state.canvasWidthPx) {
-                showToast('Carica prima un PDF base.', 'error');
+                startResizing(el, e);
                 return;
             }
-            let payload;
-            try {
-                payload = JSON.parse(e.dataTransfer.getData('text/plain'));
-            } catch (err) {
-                return;
-            }
-            const rect = overlay.getBoundingClientRect();
-            const dropX = e.clientX - rect.left - DEFAULT_W / 2;
-            const dropY = e.clientY - rect.top - DEFAULT_H / 2;
 
-            const el = createFieldBox({
-                type: payload.type,
-                dbVariable: payload.dbVariable,
-                staticText: payload.type === 'static' ? 'Testo' : null,
-                x: dropX,
-                y: dropY,
-            });
+            e.preventDefault();
             selectField(el);
+            startDragging(el, e);
         });
-    }
-
-    // =========================================================================
-    // PANNELLO PROPRIETÀ E STILI VISIVI
-    // =========================================================================
-
-    // FUNZIONE AGGIUNTA PER APPLICARE LA GRAFICA AL DOM
-    function applyVisualStyles(el) {
-        const label = el.querySelector('.field-box-label');
-        if (!label) return;
-
-        label.style.fontSize = (parseFloat(el.dataset.fontSize) || 9) + 'pt';
-        
-        label.style.fontFamily = el.dataset.fontFamily === 'courier' ? 'monospace' :
-                                 el.dataset.fontFamily === 'times' ? 'serif' : 'sans-serif';
-                                 
-        label.style.fontWeight = el.dataset.fontWeight === 'bold' ? 'bold' : 'normal';
-
-        const align = el.dataset.textAlign;
-        label.style.textAlign = align === 'C' ? 'center' : align === 'R' ? 'right' : 'left';
-        label.style.display = 'block';
-        label.style.width = '100%';
     }
 
     function selectField(el) {
-        overlay.querySelectorAll('.field-box.selected').forEach(e => e.classList.remove('selected'));
-        el.classList.add('selected');
+        if (state.selectedEl) {
+            state.selectedEl.classList.remove('selected');
+        }
         state.selectedEl = el;
+        el.classList.add('selected');
 
-        propertiesPanel.classList.remove('hidden');
-        emptyPropertiesHint.classList.add('hidden');
+        // Allineamento bidirezionale: compila la form leggendo direttamente gli attributi del DOM
+        if (propFields.name) propFields.name.value = el.dataset.fieldName || '';
+        if (propFields.text) propFields.text.value = el.dataset.staticText || '';
+        if (propFields.fontSize) propFields.fontSize.value = el.dataset.fontSize || '10';
+        if (propFields.align) propFields.align.value = el.dataset.align || 'L';
+        
+        const panel = document.getElementById('properties-panel') || document.querySelector('.properties-panel');
+        if (panel) panel.classList.add('active');
+    }
 
-        const isDb = el.dataset.type === 'db';
-        propDbBlock.classList.toggle('hidden', !isDb);
-        propStaticBlock.classList.toggle('hidden', isDb);
+    function deselectAll() {
+        if (state.selectedEl) {
+            state.selectedEl.classList.remove('selected');
+            state.selectedEl = null;
+        }
+        const panel = document.getElementById('properties-panel') || document.querySelector('.properties-panel');
+        if (panel) panel.classList.remove('active');
+    }
 
-        if (isDb) {
-            propDbVariable.textContent = el.dataset.dbVariable;
-        } else {
-            propStaticText.value = el.dataset.staticText;
+    // Algoritmo di Dragging per lo spostamento delle celle sull'asse cartesiano del Canvas
+    function startDragging(el, e) {
+        const bounds = overlay.getBoundingClientRect();
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const initialLeft = parseInt(el.style.left, 10) || 0;
+        const initialTop = parseInt(el.style.top, 10) || 0;
+
+        function onMouseMove(moveEvent) {
+            const deltaX = moveEvent.clientX - startX;
+            const deltaY = moveEvent.clientY - startY;
+
+            let newLeft = initialLeft + deltaX;
+            let newTop = initialTop + deltaY;
+
+            // Limitazione del perimetro all'interno dell'overlay di sfondo del PDF
+            const maxLeft = bounds.width - el.offsetWidth;
+            const maxTop = bounds.height - el.offsetHeight;
+
+            newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+            newTop = Math.max(0, Math.min(newTop, maxTop));
+
+            el.style.left = `${newLeft}px`;
+            el.style.top = `${newTop}px`;
         }
 
-        syncPropertiesFromElement(el);
+        function onMouseUp() {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        }
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
     }
 
-    function deselectField() {
-        if (state.selectedEl) state.selectedEl.classList.remove('selected');
-        state.selectedEl = null;
-        propertiesPanel.classList.add('hidden');
-        emptyPropertiesHint.classList.remove('hidden');
+    // Algoritmo di Ridimensionamento basato su trascinamento della maniglia d'angolo
+    function startResizing(el, e) {
+        const bounds = overlay.getBoundingClientRect();
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const initialWidth = parseInt(el.style.width, 10) || el.offsetWidth;
+        const initialHeight = parseInt(el.style.height, 10) || el.offsetHeight;
+
+        function onMouseMove(moveEvent) {
+            const deltaX = moveEvent.clientX - startX;
+            const deltaY = moveEvent.clientY - startY;
+
+            let newWidth = initialWidth + deltaX;
+            let newHeight = initialHeight + deltaY;
+
+            // Dimensioni minime di sicurezza della cella e vincolo sul bordo destro del contenitore
+            const currentLeft = parseInt(el.style.left, 10) || 0;
+            const currentTop = parseInt(el.style.top, 10) || 0;
+
+            newWidth = Math.max(30, Math.min(newWidth, bounds.width - currentLeft));
+            newHeight = Math.max(16, Math.min(newHeight, bounds.height - currentTop));
+
+            el.style.width = `${newWidth}px`;
+            el.style.height = `${newHeight}px`;
+        }
+
+        function onMouseUp() {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        }
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
     }
 
-    function syncPropertiesFromElement(el) {
-        propX.value = round1(parseFloat(el.style.left) || 0);
-        propY.value = round1(parseFloat(el.style.top) || 0);
-        propW.value = round1(parseFloat(el.style.width) || 0);
-        propH.value = round1(parseFloat(el.style.height) || 0);
-        propFontSize.value = el.dataset.fontSize;
-        propFontFamily.value = el.dataset.fontFamily;
-        propBold.checked = el.dataset.fontWeight === 'bold';
-        propGroup.value = el.dataset.groupName || '';
-        setAlignButtons(el.dataset.textAlign);
-    }
-
-    function round1(n) { return Math.round(n * 10) / 10; }
-
-    function setAlignButtons(value) {
-        propAlign.querySelectorAll('button').forEach(b => {
-            b.classList.toggle('active', b.dataset.value === value);
-        });
-    }
-
-    function updateLabel(el) {
-        const label = el.querySelector('.field-box-label');
-        label.textContent = el.dataset.type === 'db'
-            ? el.dataset.dbVariable
-            : (el.dataset.staticText || 'Testo libero');
-    }
-
+    // =========================================================================
+    // PANNELLO DELLE PROPRIETÀ (SINCRO REAL-TIME: INPUT -> DOM)
+    // =========================================================================
     function setupPropertiesPanel() {
-        propX.addEventListener('input', () => applyGeometry());
-        propY.addEventListener('input', () => applyGeometry());
-        propW.addEventListener('input', () => applyGeometry());
-        propH.addEventListener('input', () => applyGeometry());
-
-        function applyGeometry() {
-            const el = state.selectedEl;
-            if (!el) return;
-            const w = Math.max(5, parseFloat(propW.value) || DEFAULT_W);
-            const h = Math.max(5, parseFloat(propH.value) || DEFAULT_H);
-            const x = Math.max(0, Math.min(parseFloat(propX.value) || 0, state.canvasWidthPx - w));
-            const y = Math.max(0, Math.min(parseFloat(propY.value) || 0, state.canvasHeightPx - h));
-            el.style.left = x + 'px';
-            el.style.top = y + 'px';
-            el.style.width = w + 'px';
-            el.style.height = h + 'px';
+        if (overlay) {
+            overlay.addEventListener('mousedown', (e) => {
+                if (e.target === overlay || e.target.id === 'pdf-canvas') {
+                    deselectAll();
+                }
+            });
         }
 
-        // EVENTI MODIFICATI PER AGGIORNARE LA GRAFICA IN TEMPO REALE
-        propFontSize.addEventListener('input', () => {
-            if (state.selectedEl) {
-                state.selectedEl.dataset.fontSize = propFontSize.value || 9;
-                applyVisualStyles(state.selectedEl);
-            }
-        });
-        
-        propFontFamily.addEventListener('change', () => {
-            if (state.selectedEl) {
-                state.selectedEl.dataset.fontFamily = propFontFamily.value;
-                applyVisualStyles(state.selectedEl);
-            }
-        });
-        
-        propBold.addEventListener('change', () => {
-            if (state.selectedEl) {
-                state.selectedEl.dataset.fontWeight = propBold.checked ? 'bold' : 'normal';
-                applyVisualStyles(state.selectedEl);
-            }
-        });
-
-        propGroup.addEventListener('input', () => {
-            if (state.selectedEl) state.selectedEl.dataset.groupName = propGroup.value.trim();
-        });
-        
-        propStaticText.addEventListener('input', () => {
-            if (!state.selectedEl) return;
-            state.selectedEl.dataset.staticText = propStaticText.value;
-            updateLabel(state.selectedEl);
-        });
-
-        propAlign.querySelectorAll('button').forEach((btn) => {
-            btn.addEventListener('click', () => {
+        // Ascoltatori reattivi sui campi di input: salvano i dati nel DOM ad ogni pressione di tasto
+        if (propFields.name) {
+            propFields.name.addEventListener('input', (e) => {
                 if (!state.selectedEl) return;
-                state.selectedEl.dataset.textAlign = btn.dataset.value;
-                setAlignButtons(btn.dataset.value);
-                applyVisualStyles(state.selectedEl);
+                state.selectedEl.dataset.fieldName = e.target.value;
+                updateFieldBoxLabel(state.selectedEl);
+            });
+        }
+
+        if (propFields.text) {
+            propFields.text.addEventListener('input', (e) => {
+                if (!state.selectedEl) return;
+                state.selectedEl.dataset.staticText = e.target.value;
+                updateFieldBoxLabel(state.selectedEl);
+            });
+        }
+
+        if (propFields.fontSize) {
+            propFields.fontSize.addEventListener('input', (e) => {
+                if (!state.selectedEl) return;
+                state.selectedEl.dataset.fontSize = e.target.value;
+            });
+        }
+
+        if (propFields.align) {
+            propFields.align.addEventListener('change', (e) => {
+                if (!state.selectedEl) return;
+                state.selectedEl.dataset.align = e.target.value;
+            });
+        }
+    }
+
+    function updateFieldBoxLabel(el) {
+        const label = el.querySelector('.field-label');
+        if (label) {
+            const txt = (el.dataset.staticText || '').trim();
+            // Mostra il testo personalizzato fisso; se vuoto, mostra l'identificatore di stringa dinamica
+            label.textContent = txt !== '' ? txt : (el.dataset.fieldName || '');
+        }
+    }
+
+    // =========================================================================
+    // LIBRERIA CAMPI (INSERIMENTO NUOVI CAMPI SUL COMPONENT)
+    // =========================================================================
+    // =========================================================================
+    // LIBRERIA CAMPI (INSERIMENTO NUOVI CAMPI DALLA SIDEBAR)
+    // =========================================================================
+    function setupFieldLibrary() {
+        // Seleziona TUTTE le cellette presenti nella sidebar
+        const sidebarCells = document.querySelectorAll('.sidebar button, .sidebar .field-item, .sidebar .tool, [data-name]');
+        
+        sidebarCells.forEach(cell => {
+            // 1. INSERIMENTO AL CLICK (Posiziona la cella in alto a sinistra)
+            cell.addEventListener('click', (e) => {
+                e.preventDefault();
+                
+                // Controlla solo che il PDF sia fisicamente a schermo, senza bloccarti
+                if (!state.canvasWidthPx) {
+                    showToast('Carica prima il PDF vuoto.', 'error');
+                    return;
+                }
+                
+                // Prende il nome dal dataset o dal testo della celletta
+                const name = cell.dataset.name || cell.dataset.field || cell.textContent.trim() || `Campo_${state.fieldIdCounter + 1}`;
+                
+                const field = createFieldBox({
+                    fieldName: name,
+                    staticText: '', // Lasciato vuoto per farti scrivere quello che vuoi dal pannello
+                    left: 50,
+                    top: 50,
+                    width: 150,
+                    height: 26
+                });
+                selectField(field);
+            });
+
+            // 2. ABILITA IL TRASCINAMENTO (Drag & Drop dalla sidebar)
+            cell.setAttribute('draggable', 'true');
+            cell.addEventListener('dragstart', (e) => {
+                const name = cell.dataset.name || cell.dataset.field || cell.textContent.trim();
+                e.dataTransfer.setData('text/plain', name);
             });
         });
 
-        btnDeleteField.addEventListener('click', () => {
-            if (!state.selectedEl) return;
-            state.selectedEl.remove();
-            deselectField();
-            updateStatusBar();
-        });
+        // 3. RICEZIONE DELLA CELLA SUL PDF (Quando rilasci il mouse)
+        if (overlay) {
+            overlay.addEventListener('dragover', (e) => {
+                e.preventDefault(); // Necessario per autorizzare il "drop" sull'area
+            });
 
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) deselectField();
+            overlay.addEventListener('drop', (e) => {
+                e.preventDefault();
+                if (!state.canvasWidthPx) return;
+
+                // Calcola le coordinate esatte in cui hai rilasciato la celletta sul PDF
+                const bounds = overlay.getBoundingClientRect();
+                const dropX = e.clientX - bounds.left;
+                const dropY = e.clientY - bounds.top;
+
+                const name = e.dataTransfer.getData('text/plain') || `Campo_${state.fieldIdCounter + 1}`;
+
+                const field = createFieldBox({
+                    fieldName: name,
+                    staticText: '',
+                    left: Math.max(0, dropX),
+                    top: Math.max(0, dropY),
+                    width: 150,
+                    height: 26
+                });
+                selectField(field);
+            });
+        }
+    }
+
+    // =========================================================================
+    // IDRATAZIONE (CARICAMENTO GEOMETRIE DA DB ESPRESSE IN MM)
+    // =========================================================================
+    function hydrateExistingFields() {
+        const dataEl = document.getElementById('template-data');
+        if (!dataEl) return;
+        const tplData = JSON.parse(dataEl.textContent || '{}');
+        if (!tplData.fields || !Array.isArray(tplData.fields)) return;
+
+        // Fattore di conversione metrico-lineare da millimetri a pixel basato sulla scala del canvas generato
+        const mmToPxX = state.canvasWidthPx / state.pageWidthMm;
+        const mmToPxY = state.canvasHeightPx / state.pageHeightMm;
+
+        tplData.fields.forEach(f => {
+            createFieldBox({
+                id: f.id || null,
+                fieldName: f.field_name,
+                staticText: f.static_text || '',
+                fontSize: f.font_size || '10',
+                align: f.align || 'L',
+                left: Math.round(f.x_mm * mmToPxX),
+                top: Math.round(f.y_mm * mmToPxY),
+                width: Math.round(f.width_mm * mmToPxX),
+                height: Math.round(f.height_mm * mmToPxY)
+            });
         });
     }
 
     // =========================================================================
-    // SALVATAGGIO TEMPLATE
+    // CONVERSIONE SPAZIO PX -> MM E PERSISTENZA VIA POST
     // =========================================================================
-
-    function collectFieldsPayload() {
-        const boxes = Array.from(overlay.querySelectorAll('.field-box'));
-
-        const fields = boxes.map((el) => ({
-            db_variable: el.dataset.type === 'db' ? el.dataset.dbVariable : null,
-            static_text: el.dataset.type === 'static' ? el.dataset.staticText : null,
-            pos_x: parseFloat(el.style.left) || 0,
-            pos_y: parseFloat(el.style.top) || 0,
-            width: parseFloat(el.style.width) || DEFAULT_W,
-            height: parseFloat(el.style.height) || DEFAULT_H,
-            font_size: parseFloat(el.dataset.fontSize) || 9,
-            font_family: el.dataset.fontFamily || 'helvetica',
-            font_weight: el.dataset.fontWeight || 'normal',
-            text_align: el.dataset.textAlign || 'L',
-            group_name: el.dataset.groupName || null,
-        }));
-
-        fields.sort((a, b) => {
-            const ga = a.group_name || '';
-            const gb = b.group_name || '';
-            if (ga !== gb) return ga < gb ? -1 : 1;
-            return a.pos_y - b.pos_y;
-        });
-        fields.forEach((f, i) => { f.field_order = i; });
-
-        return fields;
-    }
-
     async function saveTemplate() {
-        const name = templateNameInput.value.trim();
-        if (!name) {
-            showToast('Inserisci un nome per il template.', 'error');
-            templateNameInput.focus();
+        if (!state.templateId && !state.pageWidthMm) {
+            showToast('Nessun dataset di mappatura attivo rilevato.', 'error');
             return;
         }
-        if (!state.canvasWidthPx) {
-            showToast('Carica prima un PDF base.', 'error');
-            return;
+
+        if (btnSaveTemplate) btnSaveTemplate.disabled = true;
+        if (saveStatusEl) {
+            saveStatusEl.textContent = 'Salvataggio...';
+            saveStatusEl.className = 'save-status';
         }
+
+        const fieldBoxes = document.querySelectorAll('.field-box');
+        const fieldsData = [];
+
+        // Rapporto inverso da pixel a millimetri per garantire l'assoluta indipendenza dalla risoluzione CSS
+        const pxToMmX = state.pageWidthMm / state.canvasWidthPx;
+        const pxToMmY = state.pageHeightMm / state.canvasHeightPx;
+
+        fieldBoxes.forEach(box => {
+            const leftPx = parseInt(box.style.left, 10) || 0;
+            const topPx = parseInt(box.style.top, 10) || 0;
+            const widthPx = parseInt(box.style.width, 10) || box.offsetWidth;
+            const heightPx = parseInt(box.style.height, 10) || box.offsetHeight;
+
+            fieldsData.push({
+                field_name: box.dataset.fieldName,
+                static_text: box.dataset.staticText || '',
+                font_size: box.dataset.fontSize || '10',
+                align: box.dataset.align || 'L',
+                x_mm: parseFloat((leftPx * pxToMmX).toFixed(2)),
+                y_mm: parseFloat((topPx * pxToMmY).toFixed(2)),
+                width_mm: parseFloat((widthPx * pxToMmX).toFixed(2)),
+                height_mm: parseFloat((heightPx * pxToMmY).toFixed(2))
+            });
+        });
 
         const payload = {
             template_id: state.templateId,
-            name: name,
-            filename: state.pendingUpload ? state.pendingUpload.filename : null,
-            canvas_width_px: state.canvasWidthPx,
-            canvas_height_px: state.canvasHeightPx,
-            fields: collectFieldsPayload(),
+            fields: fieldsData
         };
 
-        btnSaveTemplate.disabled = true;
-        saveStatusEl.textContent = 'Salvataggio…';
-        saveStatusEl.className = 'save-status';
-
         try {
-            const res = await fetch('save_template.php', {
+            const response = await fetch('save_template.php', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
             });
-            const data = await res.json();
+            const data = await response.json();
 
-            if (!data.success) {
-                saveStatusEl.textContent = 'Errore';
-                saveStatusEl.className = 'save-status err';
-                showToast(data.error || 'Errore durante il salvataggio.', 'error');
-                btnSaveTemplate.disabled = false;
-                return;
+            if (data.success) {
+                if (saveStatusEl) {
+                    saveStatusEl.textContent = 'Modifiche salvate';
+                    saveStatusEl.className = 'save-status ok';
+                }
+                showToast('Template salvato (' + data.fields_count + ' campi).');
+            } else {
+                if (saveStatusEl) {
+                    saveStatusEl.textContent = 'Errore di scrittura';
+                    saveStatusEl.className = 'save-status err';
+                }
+                showToast(data.error || 'Errore interno nel salvataggio.', 'error');
             }
-
-            if (!state.templateId) {
-                window.location.href = 'index.php?template_id=' + data.template_id;
-                return;
-            }
-
-            saveStatusEl.textContent = 'Salvato ✓ ' + new Date().toLocaleTimeString('it-IT');
-            saveStatusEl.className = 'save-status ok';
-            showToast('Template salvato (' + data.fields_count + ' campi).');
-            btnSaveTemplate.disabled = false;
         } catch (err) {
-            saveStatusEl.textContent = 'Errore di rete';
-            saveStatusEl.className = 'save-status err';
-            showToast('Errore di rete durante il salvataggio.', 'error');
-            btnSaveTemplate.disabled = false;
+            console.error(err);
+            if (saveStatusEl) {
+                saveStatusEl.textContent = 'Errore di rete';
+                saveStatusEl.className = 'save-status err';
+            }
+            showToast('Connessione interrotta durante il salvataggio.', 'error');
+        } finally {
+            if (btnSaveTemplate) btnSaveTemplate.disabled = false;
         }
     }
 
     // =========================================================================
-    // INIT
+    // INIZIALIZZAZIONE APPLICAZIONE
     // =========================================================================
-
     async function init() {
         const dataEl = document.getElementById('template-data');
-        const tplData = JSON.parse(dataEl.textContent || '{}');
+        const tplData = dataEl ? JSON.parse(dataEl.textContent || '{}') : {};
 
         setupDropzone();
         setupFieldLibrary();
         setupPropertiesPanel();
-        btnSaveTemplate.addEventListener('click', saveTemplate);
+        
+        if (btnSaveTemplate) {
+            btnSaveTemplate.addEventListener('click', saveTemplate);
+        }
 
         if (tplData.templateId && tplData.pdfUrl) {
             state.templateId = tplData.templateId;
@@ -618,11 +569,11 @@
             state.pageHeightMm = tplData.pageHeightMm;
 
             try {
-                await renderPdf(tplData.pdfUrl, tplData.canvasWidthPx);
+                await renderPdf(tplData.pdfUrl, tplData.canvasWidthPx || 800);
                 hydrateExistingFields();
                 updateStatusBar();
             } catch (err) {
-                showToast('Impossibile renderizzare il PDF del template.', 'error');
+                showToast('Impossibile renderizzare il PDF del template di origine.', 'error');
             }
         } else {
             updateStatusBar();
