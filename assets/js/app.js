@@ -89,19 +89,12 @@
     // RENDERING PDF (PDF.js)
     // =========================================================================
 
-    /**
-     * Renderizza la pagina 1 di un PDF sul canvas.
-     * Se lockedWidthPx e' fornito (template gia' salvato), la pagina viene
-     * disegnata esattamente a quella larghezza CSS, cosi' le coordinate delle
-     * celle gia' salvate restano perfettamente allineate. Altrimenti la
-     * larghezza viene scelta per adattarsi all'area disponibile.
-     */
     async function renderPdf(url, lockedWidthPx) {
         const loadingTask = pdfjsLib.getDocument(url);
         const pdf = await loadingTask.promise;
         const page = await pdf.getPage(1);
 
-        const nativeViewport = page.getViewport({ scale: 1 }); // 1 unita' = 1pt PDF
+        const nativeViewport = page.getViewport({ scale: 1 });
 
         let cssWidth;
         if (lockedWidthPx) {
@@ -200,7 +193,6 @@
             state.pageHeightMm = data.page_height_mm;
             state.templateId = null;
 
-            // Pulisce eventuali celle residue da un template precedentemente in editing
             overlay.innerHTML = '';
 
             await renderPdf(data.url, null);
@@ -241,7 +233,6 @@
         let x = opts.x !== undefined ? opts.x : 20;
         let y = opts.y !== undefined ? opts.y : 20;
 
-        // mantieni la cella dentro i confini del canvas
         x = Math.max(0, Math.min(x, state.canvasWidthPx - w));
         y = Math.max(0, Math.min(y, state.canvasHeightPx - h));
 
@@ -261,6 +252,10 @@
 
         overlay.appendChild(el);
         makeInteractive(el);
+        
+        // Applica gli stili visivi appena creata!
+        applyVisualStyles(el);
+
         el.addEventListener('click', (e) => {
             e.stopPropagation();
             selectField(el);
@@ -280,7 +275,8 @@
                 inertia: false,
             })
             .resizable({
-                edges: { left: false, top: false, right: true, bottom: true },
+                // COLLEGATO AL QUADRATINO BLU IN BASSO A DESTRA!
+                edges: { left: false, top: false, right: '.field-box-resize', bottom: '.field-box-resize' },
                 listeners: { move: resizeMoveListener },
                 modifiers: [
                     interact.modifiers.restrictSize({ min: { width: 14, height: 10 } }),
@@ -309,6 +305,7 @@
     function hydrateExistingFields() {
         overlay.querySelectorAll('.field-box').forEach((el) => {
             makeInteractive(el);
+            applyVisualStyles(el); // Applica la grafica anche ai campi caricati
             el.addEventListener('click', (e) => {
                 e.stopPropagation();
                 selectField(el);
@@ -364,8 +361,26 @@
     }
 
     // =========================================================================
-    // PANNELLO PROPRIETÀ
+    // PANNELLO PROPRIETÀ E STILI VISIVI
     // =========================================================================
+
+    // FUNZIONE AGGIUNTA PER APPLICARE LA GRAFICA AL DOM
+    function applyVisualStyles(el) {
+        const label = el.querySelector('.field-box-label');
+        if (!label) return;
+
+        label.style.fontSize = (parseFloat(el.dataset.fontSize) || 9) + 'pt';
+        
+        label.style.fontFamily = el.dataset.fontFamily === 'courier' ? 'monospace' :
+                                 el.dataset.fontFamily === 'times' ? 'serif' : 'sans-serif';
+                                 
+        label.style.fontWeight = el.dataset.fontWeight === 'bold' ? 'bold' : 'normal';
+
+        const align = el.dataset.textAlign;
+        label.style.textAlign = align === 'C' ? 'center' : align === 'R' ? 'right' : 'left';
+        label.style.display = 'block';
+        label.style.width = '100%';
+    }
 
     function selectField(el) {
         overlay.querySelectorAll('.field-box.selected').forEach(e => e.classList.remove('selected'));
@@ -395,7 +410,6 @@
         emptyPropertiesHint.classList.remove('hidden');
     }
 
-    /** Aggiorna gli input del pannello in base allo stato attuale dell'elemento (es. durante drag/resize) */
     function syncPropertiesFromElement(el) {
         propX.value = round1(parseFloat(el.style.left) || 0);
         propY.value = round1(parseFloat(el.style.top) || 0);
@@ -442,18 +456,32 @@
             el.style.height = h + 'px';
         }
 
+        // EVENTI MODIFICATI PER AGGIORNARE LA GRAFICA IN TEMPO REALE
         propFontSize.addEventListener('input', () => {
-            if (state.selectedEl) state.selectedEl.dataset.fontSize = propFontSize.value || 9;
+            if (state.selectedEl) {
+                state.selectedEl.dataset.fontSize = propFontSize.value || 9;
+                applyVisualStyles(state.selectedEl);
+            }
         });
+        
         propFontFamily.addEventListener('change', () => {
-            if (state.selectedEl) state.selectedEl.dataset.fontFamily = propFontFamily.value;
+            if (state.selectedEl) {
+                state.selectedEl.dataset.fontFamily = propFontFamily.value;
+                applyVisualStyles(state.selectedEl);
+            }
         });
+        
         propBold.addEventListener('change', () => {
-            if (state.selectedEl) state.selectedEl.dataset.fontWeight = propBold.checked ? 'bold' : 'normal';
+            if (state.selectedEl) {
+                state.selectedEl.dataset.fontWeight = propBold.checked ? 'bold' : 'normal';
+                applyVisualStyles(state.selectedEl);
+            }
         });
+
         propGroup.addEventListener('input', () => {
             if (state.selectedEl) state.selectedEl.dataset.groupName = propGroup.value.trim();
         });
+        
         propStaticText.addEventListener('input', () => {
             if (!state.selectedEl) return;
             state.selectedEl.dataset.staticText = propStaticText.value;
@@ -465,6 +493,7 @@
                 if (!state.selectedEl) return;
                 state.selectedEl.dataset.textAlign = btn.dataset.value;
                 setAlignButtons(btn.dataset.value);
+                applyVisualStyles(state.selectedEl);
             });
         });
 
@@ -475,7 +504,6 @@
             updateStatusBar();
         });
 
-        // click sull'area vuota del canvas (overlay) deseleziona
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) deselectField();
         });
@@ -502,9 +530,6 @@
             group_name: el.dataset.groupName || null,
         }));
 
-        // Ordina per gruppo poi per Y verticale: assegna field_order coerente
-        // con l'ordine "naturale" di lettura, cosi' la cascata funziona anche
-        // se le celle sono state create in ordine sparso.
         fields.sort((a, b) => {
             const ga = a.group_name || '';
             const gb = b.group_name || '';
@@ -558,9 +583,6 @@
             }
 
             if (!state.templateId) {
-                // Primo salvataggio: ricarica sull'URL definitivo del template
-                // cosi' il pannello "Genera Documento" diventa disponibile e il
-                // selettore in alto mostra il nuovo template nell'elenco.
                 window.location.href = 'index.php?template_id=' + data.template_id;
                 return;
             }
