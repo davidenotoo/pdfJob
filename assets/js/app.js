@@ -367,77 +367,103 @@
         }
     }
 
-    // =========================================================================
-    // LIBRERIA CAMPI (INSERIMENTO NUOVI CAMPI SUL COMPONENT)
-    // =========================================================================
-    // =========================================================================
-    // LIBRERIA CAMPI (INSERIMENTO NUOVI CAMPI DALLA SIDEBAR)
+   // =========================================================================
+    // LIBRERIA CAMPI (DELEGAZIONE EVENTI GLOBALE - BLINDATA)
     // =========================================================================
     function setupFieldLibrary() {
-        // Seleziona TUTTE le cellette presenti nella sidebar
-        const sidebarCells = document.querySelectorAll('.sidebar button, .sidebar .field-item, .sidebar .tool, [data-name]');
-        
-        sidebarCells.forEach(cell => {
-            // 1. INSERIMENTO AL CLICK (Posiziona la cella in alto a sinistra)
-            cell.addEventListener('click', (e) => {
-                e.preventDefault();
-                
-                // Controlla solo che il PDF sia fisicamente a schermo, senza bloccarti
-                if (!state.canvasWidthPx) {
-                    showToast('Carica prima il PDF vuoto.', 'error');
-                    return;
-                }
-                
-                // Prende il nome dal dataset o dal testo della celletta
-                const name = cell.dataset.name || cell.dataset.field || cell.textContent.trim() || `Campo_${state.fieldIdCounter + 1}`;
-                
-                const field = createFieldBox({
-                    fieldName: name,
-                    staticText: '', // Lasciato vuoto per farti scrivere quello che vuoi dal pannello
-                    left: 50,
-                    top: 50,
-                    width: 150,
-                    height: 26
-                });
-                selectField(field);
+        // 1. GESTIONE CLICK GLOBALE (Ignora la struttura DOM)
+        document.addEventListener('click', function(e) {
+            // Cerca se hai cliccato qualcosa che assomiglia a una celletta della sidebar
+            const cell = e.target.closest('.sidebar button, .sidebar li, .sidebar div, [data-name], [data-field]');
+            
+            // Se non è una celletta della sidebar, ignora il click
+            if (!cell || e.target.closest('.field-box') || e.target.closest('#properties-panel')) return;
+            
+            e.preventDefault();
+            
+            if (!state.canvasWidthPx) {
+                showToast('Devi prima caricare il PDF "BLANK"!', 'error');
+                return;
+            }
+            
+            // Estrae il nome. Cerca gli attributi data-name o data-field, altrimenti prende il testo del bottone
+            const nomeCampo = cell.getAttribute('data-name') || cell.getAttribute('data-field') || cell.textContent.trim();
+            
+            const field = createFieldBox({
+                fieldName: nomeCampo,
+                staticText: '',
+                left: 50,
+                top: 50,
+                width: 150,
+                height: 26
             });
-
-            // 2. ABILITA IL TRASCINAMENTO (Drag & Drop dalla sidebar)
-            cell.setAttribute('draggable', 'true');
-            cell.addEventListener('dragstart', (e) => {
-                const name = cell.dataset.name || cell.dataset.field || cell.textContent.trim();
-                e.dataTransfer.setData('text/plain', name);
-            });
+            selectField(field);
         });
 
-        // 3. RICEZIONE DELLA CELLA SUL PDF (Quando rilasci il mouse)
-        if (overlay) {
-            overlay.addEventListener('dragover', (e) => {
-                e.preventDefault(); // Necessario per autorizzare il "drop" sull'area
-            });
-
-            overlay.addEventListener('drop', (e) => {
-                e.preventDefault();
-                if (!state.canvasWidthPx) return;
-
-                // Calcola le coordinate esatte in cui hai rilasciato la celletta sul PDF
-                const bounds = overlay.getBoundingClientRect();
-                const dropX = e.clientX - bounds.left;
-                const dropY = e.clientY - bounds.top;
-
-                const name = e.dataTransfer.getData('text/plain') || `Campo_${state.fieldIdCounter + 1}`;
-
-                const field = createFieldBox({
-                    fieldName: name,
-                    staticText: '',
-                    left: Math.max(0, dropX),
-                    top: Math.max(0, dropY),
-                    width: 150,
-                    height: 26
-                });
-                selectField(field);
+        // 2. FORZATURA DEL DRAG-AND-DROP HTML5
+        // Rende draggabile qualsiasi cosa nella sidebar
+        const sidebar = document.querySelector('.sidebar') || document.querySelector('aside');
+        if (sidebar) {
+            const items = sidebar.querySelectorAll('button, li, div');
+            items.forEach(item => {
+                item.setAttribute('draggable', 'true');
+                item.style.cursor = 'grab';
             });
         }
+
+        // Cattura l'inizio del trascinamento a livello globale
+        document.addEventListener('dragstart', (e) => {
+            const cell = e.target.closest('[draggable="true"]');
+            if (!cell) return;
+            
+            const nomeCampo = cell.getAttribute('data-name') || cell.getAttribute('data-field') || cell.textContent.trim();
+            e.dataTransfer.setData('text/plain', nomeCampo);
+        });
+
+        // 3. LA ZONA DI ATTERRAGGIO (IL PDF)
+        const dropArea = document.getElementById('canvas-stage') || document.getElementById('overlay') || document.body;
+
+        // FONDAMENTALE: Se non si previene il default qui, il browser rifiuta il drop
+        dropArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+        });
+
+        dropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            
+            // Ignora se stai droppando un file PDF vero e proprio
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) return;
+            
+            if (!state.canvasWidthPx) {
+                showToast('Nessun PDF caricato.', 'error');
+                return;
+            }
+
+            const nomeCampo = e.dataTransfer.getData('text/plain');
+            if (!nomeCampo) return; // Non era una cella valida
+
+            // Calcolo coordinate di caduta (protezione contro i bordi sballati)
+            let dropX = e.clientX;
+            let dropY = e.clientY;
+            
+            const overlayTarget = document.getElementById('overlay');
+            if (overlayTarget) {
+                const rect = overlayTarget.getBoundingClientRect();
+                dropX = e.clientX - rect.left;
+                dropY = e.clientY - rect.top;
+            }
+
+            const field = createFieldBox({
+                fieldName: nomeCampo,
+                staticText: '',
+                left: Math.max(0, dropX),
+                top: Math.max(0, dropY),
+                width: 150,
+                height: 26
+            });
+            selectField(field);
+        });
     }
 
     // =========================================================================
